@@ -24,6 +24,11 @@ const UserSchema = new mongoose.Schema({
   password: { type: String, required: true },
   name: { type: String, required: true }
 });
+// Normalize email to lowercase before saving
+UserSchema.pre('save', function (next) {
+  this.email = this.email.toLowerCase();
+  next();
+});
 const User = mongoose.model('User', UserSchema);
 
 const AccountSchema = new mongoose.Schema({
