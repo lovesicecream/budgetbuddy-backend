@@ -7,10 +7,8 @@ const jwt = require('jsonwebtoken');
 
 const app = express();
 
-// ---------- CORS (Restrict to your frontend) ----------
-// Temporarily allow all origins (for testing)
+// ---------- CORS ----------
 app.use(cors());
-// Remove the restrictive block that used FRONTEND_URL
 app.use(express.json());
 
 // MongoDB connection
@@ -89,7 +87,6 @@ const auth = async (req, res, next) => {
 
 // ========== HELPER: Update budget spent ==========
 async function updateBudgetSpent(userId, category, month) {
-  // sum all expense transactions in that category & month
   const start = new Date(`${month}-01`);
   const end = new Date(start.getFullYear(), start.getMonth() + 1, 1);
   const transactions = await Transaction.find({
@@ -107,7 +104,7 @@ async function updateBudgetSpent(userId, category, month) {
 // REGISTER
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const email = req.body.email.toLowerCase();   // ← lowercased
+    const email = req.body.email.toLowerCase();
     const { password, name } = req.body;
     console.log('Register attempt:', email, name);
     
@@ -131,7 +128,7 @@ app.post('/api/auth/register', async (req, res) => {
 // LOGIN
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const email = req.body.email.toLowerCase();   // ← lowercased
+    const email = req.body.email.toLowerCase();
     const { password } = req.body;
     console.log('Login attempt:', email);
     
@@ -212,34 +209,33 @@ app.post('/api/transactions', auth, async (req, res) => {
   res.json(transaction);
 });
 
-// ---------- EDIT TRANSACTION (PUT) ----------
+// EDIT TRANSACTION (PUT)
 app.put('/api/transactions/:id', auth, async (req, res) => {
   const oldTx = await Transaction.findOne({ _id: req.params.id, userId: req.userId });
   if (!oldTx) return res.status(404).json({ error: 'Transaction not found' });
 
   const oldAccount = await Account.findOne({ _id: oldTx.accountId, userId: req.userId });
 
-  // 1. Revert old transaction's effect on account
+  // Revert old transaction's effect on account
   if (oldTx.type === 'expense') oldAccount.balance += oldTx.amount;
   else oldAccount.balance -= oldTx.amount;
   await oldAccount.save();
 
-  // 2. Update transaction fields
+  // Update transaction fields
   Object.assign(oldTx, req.body);
   await oldTx.save();
 
-  // 3. Apply new effect
+  // Apply new effect
   const newAccount = await Account.findOne({ _id: oldTx.accountId, userId: req.userId });
   if (oldTx.type === 'expense') newAccount.balance -= oldTx.amount;
   else newAccount.balance += oldTx.amount;
   await newAccount.save();
 
-  // 4. Update budgets if expense (old and new category/month)
+  // Update budgets if expense (old and new category/month)
   if (oldTx.type === 'expense') {
     const oldMonth = oldTx.date.toISOString().slice(0, 7);
     await updateBudgetSpent(req.userId, oldTx.category, oldMonth);
 
-    // If category or month changed, update the new one as well
     const newMonth = req.body.date ? new Date(req.body.date).toISOString().slice(0,7) : oldMonth;
     const newCategory = req.body.category || oldTx.category;
     if (newCategory !== oldTx.category || newMonth !== oldMonth) {
@@ -259,7 +255,6 @@ app.delete('/api/transactions/:id', auth, async (req, res) => {
   else account.balance -= transaction.amount;
   await account.save();
 
-  // Update budget if expense
   if (transaction.type === 'expense') {
     const month = transaction.date.toISOString().slice(0, 7);
     await updateBudgetSpent(req.userId, transaction.category, month);
@@ -306,7 +301,6 @@ app.post('/api/budgets', auth, async (req, res) => {
     return res.status(400).json({ error: 'Missing fields' });
   }
 
-  // Upsert: update if exists, otherwise create
   const existing = await Budget.findOne({ userId: req.userId, category, month });
   if (existing) {
     existing.limit = limit;
