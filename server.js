@@ -107,18 +107,19 @@ async function updateBudgetSpent(userId, category, month) {
 // REGISTER
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { email, password, name } = req.body;
+    const email = req.body.email.toLowerCase();   // ← lowercased
+    const { password, name } = req.body;
     console.log('Register attempt:', email, name);
-
+    
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ error: 'User already exists' });
     }
-
+    
     const hashedPassword = await bcrypt.hash(password, 10);
     const user = new User({ email, password: hashedPassword, name });
     await user.save();
-
+    
     console.log('User registered:', email);
     res.json({ message: 'User created successfully' });
   } catch (err) {
@@ -130,27 +131,28 @@ app.post('/api/auth/register', async (req, res) => {
 // LOGIN
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = req.body.email.toLowerCase();   // ← lowercased
+    const { password } = req.body;
     console.log('Login attempt:', email);
-
+    
     const user = await User.findOne({ email });
     if (!user) {
       console.log('User not found:', email);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
-
+    
     const isValid = await bcrypt.compare(password, user.password);
     if (!isValid) {
       console.log('Invalid password for:', email);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
-
+    
     const token = jwt.sign(
       { userId: user._id, email: user.email },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
-
+    
     console.log('Login successful:', email);
     res.json({ token, userId: user._id, name: user.name });
   } catch (err) {
