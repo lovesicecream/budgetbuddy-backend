@@ -8,10 +8,9 @@ const jwt = require('jsonwebtoken');
 const app = express();
 
 // ---------- CORS (Restrict to your frontend) ----------
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true            // if you later use cookies
-}));
+// Temporarily allow all origins (for testing)
+app.use(cors());
+// Remove the restrictive block that used FRONTEND_URL
 app.use(express.json());
 
 // MongoDB connection
