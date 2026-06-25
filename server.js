@@ -6,7 +6,12 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const app = express();
-app.use(cors());
+
+// ---------- CORS (Restrict to your frontend) ----------
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  credentials: true            // if you later use cookies
+}));
 app.use(express.json());
 
 // MongoDB connection
@@ -56,6 +61,15 @@ const DebtSchema = new mongoose.Schema({
 });
 const Debt = mongoose.model('Debt', DebtSchema);
 
+const BudgetSchema = new mongoose.Schema({
+  userId: String,
+  category: String,
+  limit: Number,
+  month: String,       // format "YYYY-MM"
+  spent: { type: Number, default: 0 }
+});
+const Budget = mongoose.model('Budget', BudgetSchema);
+
 // ========== AUTH MIDDLEWARE ==========
 const auth = async (req, res, next) => {
   const token = req.header('Authorization')?.replace('Bearer ', '');
@@ -69,6 +83,21 @@ const auth = async (req, res, next) => {
   }
 };
 
+// ========== HELPER: Update budget spent ==========
+async function updateBudgetSpent(userId, category, month) {
+  // sum all expense transactions in that category & month
+  const start = new Date(`${month}-01`);
+  const end = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+  const transactions = await Transaction.find({
+    userId,
+    type: 'expense',
+    category,
+    date: { $gte: start, $lt: end }
+  });
+  const total = transactions.reduce((sum, t) => sum + t.amount, 0);
+  await Budget.findOneAndUpdate({ userId, category, month }, { spent: total });
+}
+
 // ========== ROUTES ==========
 
 // REGISTER
@@ -76,20 +105,16 @@ app.post('/api/auth/register', async (req, res) => {
   try {
     const { email, password, name } = req.body;
     console.log('Register attempt:', email, name);
-    
-    // Check if user exists
+
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ error: 'User already exists' });
     }
-    
-    // Hash password
+
     const hashedPassword = await bcrypt.hash(password, 10);
-    
-    // Create user
     const user = new User({ email, password: hashedPassword, name });
     await user.save();
-    
+
     console.log('User registered:', email);
     res.json({ message: 'User created successfully' });
   } catch (err) {
@@ -103,28 +128,25 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     console.log('Login attempt:', email);
-    
-    // Find user
+
     const user = await User.findOne({ email });
     if (!user) {
       console.log('User not found:', email);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
-    
-    // Compare password
+
     const isValid = await bcrypt.compare(password, user.password);
     if (!isValid) {
       console.log('Invalid password for:', email);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
-    
-    // Generate JWT
+
     const token = jwt.sign(
       { userId: user._id, email: user.email },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
-    
+
     console.log('Login successful:', email);
     res.json({ token, userId: user._id, name: user.name });
   } catch (err) {
@@ -168,19 +190,75 @@ app.get('/api/transactions', auth, async (req, res) => {
 app.post('/api/transactions', auth, async (req, res) => {
   const transaction = new Transaction({ ...req.body, userId: req.userId });
   await transaction.save();
+
+  // Update account balance
   const account = await Account.findOne({ _id: transaction.accountId, userId: req.userId });
   if (transaction.type === 'expense') account.balance -= transaction.amount;
   else account.balance += transaction.amount;
   await account.save();
+
+  // Update budget if expense
+  if (transaction.type === 'expense') {
+    const month = transaction.date.toISOString().slice(0, 7);
+    await updateBudgetSpent(req.userId, transaction.category, month);
+  }
+
   res.json(transaction);
+});
+
+// ---------- EDIT TRANSACTION (PUT) ----------
+app.put('/api/transactions/:id', auth, async (req, res) => {
+  const oldTx = await Transaction.findOne({ _id: req.params.id, userId: req.userId });
+  if (!oldTx) return res.status(404).json({ error: 'Transaction not found' });
+
+  const oldAccount = await Account.findOne({ _id: oldTx.accountId, userId: req.userId });
+
+  // 1. Revert old transaction's effect on account
+  if (oldTx.type === 'expense') oldAccount.balance += oldTx.amount;
+  else oldAccount.balance -= oldTx.amount;
+  await oldAccount.save();
+
+  // 2. Update transaction fields
+  Object.assign(oldTx, req.body);
+  await oldTx.save();
+
+  // 3. Apply new effect
+  const newAccount = await Account.findOne({ _id: oldTx.accountId, userId: req.userId });
+  if (oldTx.type === 'expense') newAccount.balance -= oldTx.amount;
+  else newAccount.balance += oldTx.amount;
+  await newAccount.save();
+
+  // 4. Update budgets if expense (old and new category/month)
+  if (oldTx.type === 'expense') {
+    const oldMonth = oldTx.date.toISOString().slice(0, 7);
+    await updateBudgetSpent(req.userId, oldTx.category, oldMonth);
+
+    // If category or month changed, update the new one as well
+    const newMonth = req.body.date ? new Date(req.body.date).toISOString().slice(0,7) : oldMonth;
+    const newCategory = req.body.category || oldTx.category;
+    if (newCategory !== oldTx.category || newMonth !== oldMonth) {
+      await updateBudgetSpent(req.userId, newCategory, newMonth);
+    }
+  }
+
+  res.json(oldTx);
 });
 
 app.delete('/api/transactions/:id', auth, async (req, res) => {
   const transaction = await Transaction.findOneAndDelete({ _id: req.params.id, userId: req.userId });
+  if (!transaction) return res.status(404).json({ error: 'Transaction not found' });
+
   const account = await Account.findOne({ _id: transaction.accountId, userId: req.userId });
   if (transaction.type === 'expense') account.balance += transaction.amount;
   else account.balance -= transaction.amount;
   await account.save();
+
+  // Update budget if expense
+  if (transaction.type === 'expense') {
+    const month = transaction.date.toISOString().slice(0, 7);
+    await updateBudgetSpent(req.userId, transaction.category, month);
+  }
+
   res.json({ success: true });
 });
 
@@ -207,6 +285,36 @@ app.put('/api/debts/:id', auth, async (req, res) => {
 
 app.delete('/api/debts/:id', auth, async (req, res) => {
   await Debt.findOneAndDelete({ _id: req.params.id, userId: req.userId });
+  res.json({ success: true });
+});
+
+// ========== BUDGET ROUTES ==========
+app.get('/api/budgets', auth, async (req, res) => {
+  const budgets = await Budget.find({ userId: req.userId });
+  res.json(budgets);
+});
+
+app.post('/api/budgets', auth, async (req, res) => {
+  const { category, limit, month } = req.body;
+  if (!category || !limit || !month) {
+    return res.status(400).json({ error: 'Missing fields' });
+  }
+
+  // Upsert: update if exists, otherwise create
+  const existing = await Budget.findOne({ userId: req.userId, category, month });
+  if (existing) {
+    existing.limit = limit;
+    await existing.save();
+    return res.json(existing);
+  }
+
+  const budget = new Budget({ userId: req.userId, category, limit, month, spent: 0 });
+  await budget.save();
+  res.json(budget);
+});
+
+app.delete('/api/budgets/:id', auth, async (req, res) => {
+  await Budget.findOneAndDelete({ _id: req.params.id, userId: req.userId });
   res.json({ success: true });
 });
 
