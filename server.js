@@ -318,6 +318,25 @@ app.delete('/api/budgets/:id', auth, async (req, res) => {
   res.json({ success: true });
 });
 
+// ========== ONE-TIME FIX – recalculate all balances ==========
+app.post('/api/fix-balances', auth, async (req, res) => {
+  const accounts = await Account.find({ userId: req.userId });
+  const transactions = await Transaction.find({ userId: req.userId });
+
+  for (const acc of accounts) {
+    const balance = transactions
+      .filter(t => t.accountId === acc._id)
+      .reduce((sum, t) => {
+        return sum + (t.type === 'income' ? t.amount : -t.amount);
+      }, 0);
+    acc.balance = balance;
+    await acc.save();
+  }
+
+  res.json({ success: true });
+});
+
+
 // ========== START SERVER ==========
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
