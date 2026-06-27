@@ -319,21 +319,29 @@ app.delete('/api/budgets/:id', auth, async (req, res) => {
 });
 
 // ========== ONE-TIME FIX – recalculate all balances ==========
-app.post('/api/fix-balances', auth, async (req, res) => {
-  const accounts = await Account.find({ userId: req.userId });
-  const transactions = await Transaction.find({ userId: req.userId });
+// ========== ONE‑TIME BALANCE RECALCULATION (admin) ==========
+app.post('/api/admin/recalc-balances', auth, async (req, res) => {
+  try {
+    const accounts = await Account.find({ userId: req.userId });
+    const transactions = await Transaction.find({ userId: req.userId });
 
-  for (const acc of accounts) {
-    const balance = transactions
-      .filter(t => t.accountId === acc._id)
-      .reduce((sum, t) => {
-        return sum + (t.type === 'income' ? t.amount : -t.amount);
-      }, 0);
-    acc.balance = balance;
-    await acc.save();
+    for (const account of accounts) {
+      let balance = 0;
+      // Only transactions belonging to this account
+      const tx = transactions.filter(t => t.accountId === account._id.toString());
+      tx.forEach(t => {
+        if (t.type === 'expense') balance -= t.amount;
+        else if (t.type === 'income') balance += t.amount;
+      });
+      account.balance = balance;
+      await account.save();
+    }
+
+    res.json({ success: true, message: 'All account balances recalculated' });
+  } catch (err) {
+    console.error('Recalc error:', err);
+    res.status(500).json({ error: err.message });
   }
-
-  res.json({ success: true });
 });
 
 
